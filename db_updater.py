@@ -1,9 +1,22 @@
-import sqlite3
-from sqlite3 import Error
+import os
+import sys
+import mysql.connector
+from mysql.connector import errorcode
 import pandas as pd
 from openpyxl import load_workbook
 from deepdiff import DeepDiff
-import os
+
+
+sys.path.insert(0, os.path.dirname(__file__))
+
+
+def app(environ, start_response):
+    start_response('200 OK', [('Content-Type', 'text/plain')])
+    message = 'Successfully updated!\n'
+    version = 'Python v' + sys.version.split()[0] + '\n'
+    response = '\n'.join([message, version])
+    return [response.encode()]
+
 
 def read_excel(filename):
     '''Reading excel'''
@@ -39,16 +52,28 @@ def read_excel(filename):
     #print(goods_dict)
     return goods_dict
 
-def create_connection(db_file):
+
+def create_connection():
     '''Creating connection to local DB'''
 
     con = None
     try:
-        con = sqlite3.connect(db_file)
-    except Error as e:
-        print(e)
+        con = mysql.connector.connect(
+            user='runoavto_db',
+            password='lNBmBVYBK$Ns',
+            host='localhost',
+            database='runoavto_db'
+        )
+        print("Successfully connected")
+        return con
+    except mysql.connector.Error as err:
+        if err.errno == errorcode.ER_ACCESS_DENIED_ERROR:
+            print("Something is wrong with your user name or password")
+        elif err.errno == errorcode.ER_BAD_DB_ERROR:
+            print("Database does not exist")
+        else:
+            print(err)
 
-    return con
 
 def select_postid_with_sku(conn):
     '''Select post_id by _sku'''
@@ -62,13 +87,14 @@ def select_postid_with_sku(conn):
 
     return postid_dict
 
+
 def select_data_with_postid(conn, postid_dict):
     '''Select prices by post_id'''
 
     cur = conn.cursor()
     data_dict = {}
     for article, post_id in postid_dict.items():
-        cur.execute(f"SELECT * FROM `wp_postmeta` WHERE `post_id` = '{post_id}'")
+        cur.execute("SELECT * FROM `wp_postmeta` WHERE `post_id`=%s", (post_id, ))
         rows = cur.fetchall()
         stock, price, woosale, regular_price, wcwp_sto = 'outofstock', 0, 0, 0, 0
         for row in rows:
@@ -96,28 +122,32 @@ def select_data_with_postid(conn, postid_dict):
 
     return data_dict
 
+
 def select_metaid(conn, post_id, meta_key):
     '''Select meta_id by post_id and meta_key'''
 
     cur = conn.cursor()
-    cur.execute(f"SELECT * FROM `wp_postmeta` WHERE `post_id` = '{post_id}' and `meta_key` = '{meta_key}' ")
+    cur.execute("SELECT * FROM `wp_postmeta` WHERE `post_id` =%s and `meta_key` =%s", (post_id, meta_key))
     row = cur.fetchone()
-    #print('old_row', row)
+    print('old_row', row)
     return row[0]
+
 
 def check_update(conn, post_id, meta_key):
     '''Select meta_id by post_id and meta_key'''
 
     cur = conn.cursor()
-    cur.execute(f"SELECT * FROM `wp_postmeta` WHERE `post_id` = '{post_id}' and `meta_key` = '{meta_key}' ")
+    cur.execute("SELECT * FROM `wp_postmeta` WHERE `post_id` =%s and `meta_key` =%s", (post_id, meta_key))
     row = cur.fetchone()
     print('new_row', row)
     return row[0]
 
+
 def update_row(conn, meta_value, meta_id):
     '''Update meta_value by meta_id'''
     cur = conn.cursor()
-    cur.execute(f"UPDATE `wp_postmeta` SET 'meta_value' = '{meta_value}' WHERE `meta_id` = {meta_id}")
+    cur.execute("UPDATE `wp_postmeta` SET `meta_value` =%s WHERE `wp_postmeta`.`meta_id` =%s", (meta_value, meta_id))
+    conn.commit()
 
 def create_ldiff(ddiff):
     '''Creating list of articles with differences'''
@@ -135,6 +165,7 @@ def create_ldiff(ddiff):
     print("difflen", len(ldiff))
     return ldiff
 
+
 def update_table(conn, ldiff, postid_dict, ex_dict):
     '''Update all rows with arcitle from ldiff'''
 
@@ -146,19 +177,18 @@ def update_table(conn, ldiff, postid_dict, ex_dict):
             meta_id = select_metaid(conn, post_id, meta_key)
             #print('meta_id', meta_id)
             update_row(conn, meta_value, meta_id)
-            #check_update(conn, post_id, meta_key)
+            check_update(conn, post_id, meta_key)
+
 
 def main():
-    database = r'runoavto_db.db'
-
     # create a database connection
-    conn = create_connection(database)
-    ex_dict = read_excel('runoauto_price_2206.xls')
+    conn = create_connection()
+    ex_dict = read_excel(r'/home/runoavto/public_html/runoauto_price_new.xlsx')
     with conn:
         postid_dict = select_postid_with_sku(conn)
         db_dict = select_data_with_postid(conn, postid_dict)
-        #print(db_dict)
-        #print(ex_dict)
+        #print("db_dict", db_dict)
+        #print("ex_dict", ex_dict)
         ddiff = DeepDiff(db_dict, ex_dict, ignore_order=True, ignore_string_case=True, ignore_numeric_type_changes=True)
         #print(ddiff)
         ldiff = create_ldiff(ddiff)
@@ -167,5 +197,7 @@ def main():
     conn.close()
     print("FINISHED!")
 
+
 if __name__ == '__main__':
     main()
+    app()
